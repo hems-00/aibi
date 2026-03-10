@@ -1,0 +1,350 @@
+# AI-Powered Business Intelligence Platform
+
+> **Natural Language → SQL + RAG Document Analysis**  
+> Ask questions about your data and documents in plain English. No SQL knowledge required.
+
+![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.2.5-6DB33F?style=for-the-badge&logo=spring-boot)
+![Java](https://img.shields.io/badge/Java-17-ED8B00?style=for-the-badge&logo=openjdk)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=for-the-badge&logo=postgresql)
+![Groq](https://img.shields.io/badge/Groq-llama--3.3--70b-F55036?style=for-the-badge)
+![OpenRouter](https://img.shields.io/badge/OpenRouter-text--embedding--3--small-412991?style=for-the-badge)
+
+---
+
+## What Is This?
+
+A full-stack generative AI platform that lets non-technical users extract insights from **structured data (CSV/Excel)** and **unstructured documents (PDF annual reports)** through a single unified chat interface.
+
+The platform bridges two historically separate worlds:
+
+| World | Traditional Tool | This Platform |
+|---|---|---|
+| Database Analytics | PowerBI, Tableau | NL → SQL → Chart |
+| Document Intelligence | Manual reading | PDF → RAG → Answer |
+| **Both combined** | **Does not exist** | **Smart router decides automatically** |
+
+---
+
+## Core Features
+
+- **Upload any CSV** → immediately query it in natural language → auto-generated charts
+- **Upload financial PDFs** (10-K annual reports) → ask specific data questions → cited answers
+- **Automatic query routing** — system decides SQL or RAG without user input
+- **Auto chart selection** — bar, line, pie, scatter chosen based on data shape
+- **AI-written business insights** for every query result
+- **Source citations** — shows exactly which document sections answered each question
+- **Floating chat widget** — animated, available on every page
+
+---
+
+## System Architecture
+
+```
+User (Browser)
+      │
+      ▼
+React Frontend  (port 3000)
+      │
+      ▼
+Spring Boot Backend  (port 8081)
+      │
+      ├── POST /api/files/upload-csv   → Parse → Dynamic table in PostgreSQL
+      ├── POST /upload/document        → Tika → Classify → Chunk → Embed → pgvector
+      ├── POST /api/query              → NL → SQL → Execute → Chart + Insight
+      └── POST /query/document         → Embed → pgvector search → Groq RAG answer
+           │
+           ├── Neon PostgreSQL   (structured tables + pgvector embeddings)
+           ├── OpenRouter API    (text-embedding-3-small)
+           └── Groq API          (deepseek-chat · llama-3-8b · llama-3.3-70b)
+```
+
+---
+
+## AI Models — Who Does What
+
+| Model | Provider | Job | File |
+|---|---|---|---|
+| `openai/text-embedding-3-small` | OpenRouter | Converts text chunks and questions to `float[1536]` vectors | `EmbeddingService.java` |
+| `deepseek/deepseek-chat` | OpenRouter | Generates SQL from natural language questions | SQL Service |
+| `meta-llama/llama-3-8b-instruct` | OpenRouter | Writes business insights from query results | Insight Service |
+| `llama-3.3-70b-versatile` | Groq | Query routing (SQL vs RAG) + RAG answer generation | `RAGService.java` |
+
+---
+
+## PDF Processing Pipeline
+
+When a financial PDF is uploaded, it passes through 5 sequential stages:
+
+```
+Stage 1 — TikaExtractorService
+          Apache Tika extracts full raw text preserving whitespace layout
+          
+Stage 2 — ContentClassifierService  
+          Classifies each block as TABLE | NARRATIVE | HEADER
+          Tables detected by: 2+ financial numbers per line (52,931 / $1,200 / 18.5%)
+          
+Stage 3 — TextChunkerService
+          NARRATIVE → 500-word sliding window (50-word overlap)
+          TABLE     → converted to natural language sentences:
+            "Net revenues   52,931   49,282" + headers ["2024","2023"]
+            → "Net revenues was 52,931 in 2024, 49,282 in 2023."
+            
+Stage 4 — EmbeddingService
+          Each chunk → OpenRouter API → float[1536] vector
+          Batched in groups of 20 to respect rate limits
+          
+Stage 5 — VectorStoreService
+          Batch-inserts all vectors into pgvector via JDBC
+          Uses ?::vector cast with Types.OTHER
+```
+
+---
+
+## API Reference
+
+### `POST /api/files/upload-csv`
+Upload a CSV or Excel file. Automatically creates a PostgreSQL table.
+
+```bash
+curl -X POST http://localhost:8081/api/files/upload-csv \
+  -F "file=@sales_data.csv"
+```
+
+```json
+{
+  "tableName": "sales_data",
+  "rowsInserted": 245,
+  "columns": ["region", "product", "revenue", "date"],
+  "status": "success"
+}
+```
+
+---
+
+### `POST /api/query`
+Ask a natural language question about uploaded CSV data. Returns chart-ready data.
+
+```bash
+curl -X POST http://localhost:8081/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Compare revenue generated by each product"}'
+```
+
+```json
+{
+  "chartType": "bar",
+  "data": [
+    { "product_line": "Smartphones", "revenue": 12180000 },
+    { "product_line": "Laptops",     "revenue": 9550000  },
+    { "product_line": "Cloud",       "revenue": 7600000  }
+  ],
+  "insight": "Smartphones leads with $12.18M revenue, representing 31.7% of total...",
+  "xAxis": "product_line",
+  "yAxis": "revenue"
+}
+```
+
+**Chart types returned:** `bar` · `line` · `pie` · `scatter` · `table`
+
+---
+
+### `POST /upload/document`
+Upload a PDF or DOCX. Runs the full 5-stage RAG pipeline.
+
+```bash
+curl -X POST http://localhost:8081/upload/document \
+  -F "file=@annual_report_2024.pdf"
+```
+
+```json
+{
+  "sourceId": 1,
+  "filename": "annual_report_2024.pdf",
+  "totalChunks": 83,
+  "tablesDetected": 12,
+  "narrativeChunks": 71,
+  "status": "success"
+}
+```
+
+---
+
+### `POST /query/document`
+Ask a question about an uploaded document. Returns a grounded answer with source citations.
+
+```bash
+curl -X POST http://localhost:8081/query/document \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was net revenue in 2024?", "sourceId": 1}'
+```
+
+```json
+{
+  "answer": "Net revenues in 2024 were $52,931 million, up 7.4% from $49,282 million in 2023.",
+  "sources": [
+    {
+      "content": "Net revenues   52,931   49,282   43,151",
+      "sectionTitle": "CONSOLIDATED STATEMENTS OF INCOME",
+      "chunkType": "table",
+      "similarity": 0.94
+    }
+  ],
+  "queryType": "RAG"
+}
+```
+
+---
+
+### `GET /documents`
+List all uploaded documents.
+
+```json
+[
+  { "id": 1, "filename": "annual_report_2024.pdf", "totalChunks": 83, "uploadTime": "2025-03-04T16:20:24" }
+]
+```
+
+### `DELETE /documents/{id}`
+Delete a document and all its vectors.
+
+---
+
+## Database Schema
+
+Run these in your Neon SQL Editor before starting the app:
+
+```sql
+-- Enable pgvector
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Document metadata
+CREATE TABLE document_sources (
+    id           SERIAL PRIMARY KEY,
+    filename     VARCHAR(500) NOT NULL,
+    file_type    VARCHAR(50)  DEFAULT 'pdf',
+    total_chunks INT          DEFAULT 0,
+    upload_time  TIMESTAMP    DEFAULT NOW()
+);
+
+-- Chunks with embeddings
+CREATE TABLE document_chunks (
+    id            SERIAL PRIMARY KEY,
+    source_id     INT   REFERENCES document_sources(id) ON DELETE CASCADE,
+    chunk_index   INT   NOT NULL,
+    chunk_type    VARCHAR(20),        -- 'narrative' or 'table'
+    content       TEXT,               -- NL version → embedded + matched
+    raw_content   TEXT,               -- original text → shown in citations
+    section_title VARCHAR(500),
+    embedding     VECTOR(1536),       -- pgvector column
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+
+-- Cosine similarity index
+CREATE INDEX ON document_chunks
+    USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+```
+
+---
+
+## ⚙️ Setup & Installation
+
+### Prerequisites
+
+- Java 17+
+- Maven 3.8+
+- Node.js 18+ and npm
+- [Neon](https://neon.tech) account (free)
+- [Groq](https://console.groq.com) API key (free)
+- [OpenRouter](https://openrouter.ai) API key (free, ~$5 credit for embeddings)
+
+---
+
+### Configure `application.properties`
+
+```properties
+server.port=8081
+
+# Neon PostgreSQL
+spring.datasource.url=jdbc:postgresql://YOUR_NEON_HOST/neondb?sslmode=require
+spring.datasource.username=YOUR_USERNAME
+spring.datasource.password=YOUR_PASSWORD
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# OpenRouter (embeddings)
+openrouter.api.key=YOUR_OPENROUTER_KEY
+openrouter.embedding.url=https://openrouter.ai/api/v1/embeddings
+openrouter.embedding.model=openai/text-embedding-3-small
+
+# Groq (LLM)
+groq.api.key=YOUR_GROQ_KEY
+groq.chat.url=https://api.groq.com/openai/v1/chat/completions
+groq.chat.model=llama-3.3-70b-versatile
+
+# RAG settings
+rag.chunk.size=500
+rag.chunk.overlap=50
+rag.retrieval.topk=5
+
+# File upload limit (10-K reports can be large)
+spring.servlet.multipart.max-file-size=50MB
+spring.servlet.multipart.max-request-size=50MB
+```
+
+---
+
+### Run Backend
+
+```bash
+cd bi-platform
+mvn clean install
+mvn spring-boot:run
+```
+
+Backend starts at `http://localhost:8081`
+
+---
+
+### Run Frontend
+
+```bash
+cd frontend
+npm install
+npm start
+```
+
+Frontend starts at `http://localhost:3000`
+
+---
+
+### Sample Questions
+
+**For CSV data:**
+```
+"Compare revenue generated by each product"
+"Show total sales by region"
+"What is the monthly revenue trend?"
+"Which product has the highest profit margin?"
+```
+
+**For PDF documents:**
+```
+"What was total revenue in 2024?"
+"Compare gross profit across all years"
+"What drove revenue growth in Asia Pacific?"
+"Show me the earnings per share values"
+"What were the main risk factors mentioned?"
+```
+
+---
+
+## ⚠️ Known Limitations
+
+- Scanned PDFs (image-based) are not supported — text must be selectable
+- No authentication or multi-user support in v1.0
+- Conversation memory is stateless — each question is independent
+- Optimised for 1280px+ desktop screens
+
+---
+
